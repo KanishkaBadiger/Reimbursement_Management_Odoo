@@ -12,7 +12,7 @@ export default function ExpenseRow({ expense }) {
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: '10px'
+      marginBottom: '10px',
     }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
         <span style={{ fontFamily: FONTS.body, fontWeight: 500, color: COLORS.textPrimary, fontSize: '15px' }}>
@@ -24,7 +24,7 @@ export default function ExpenseRow({ expense }) {
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
         <span style={{ fontFamily: FONTS.body, fontWeight: 700, color: COLORS.textPrimary }}>
-          ₹{expense.displayAmount.toLocaleString()}
+          ₹{Number(expense.display_amount).toLocaleString()}
         </span>
         <Badge status={expense.status} />
       </div>
