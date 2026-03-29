@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-secondary-container: #d3e4fe;
+  --color-background: #f7f9fb;
+  --color-on-primary-fixed-variant: #0050d4;
+  --color-on-surface-variant: #566166;
+  --color-on-surface: #2a3439;
+  --color-primary-fixed-dim: #c7d3ff;
+  --color-on-secondary-fixed: #314055;
+  --color-on-primary-fixed: #003798;
+  --color-on-secondary-container: #435368;
+  --color-surface-container-low: #f0f4f7;
+  --color-primary-dim: #0048c1;
+  --color-outline: #717c82;
+  --color-surface-container-high: #e1e9ee;
+  --color-on-primary-container: #0048bf;
+  --color-on-tertiary-fixed-variant: #006c2d;
+  --color-primary-fixed: #dbe1ff;
+  --color-tertiary: #006e2e;
+  --color-surface-tint: #0053db;
+  --color-outline-variant: #a9b4b9;
+  --color-inverse-surface: #0b0f10;
+  --color-tertiary-dim: #006127;
+  --color-on-tertiary: #e9ffe6;
+  --color-surface: #f7f9fb;
+  --color-error-container: #fe8983;
+  --color-on-background: #2a3439;
+  --color-surface-container: #e8eff3;
+  --color-secondary-dim: #44546a;
+  --color-on-error-container: #752121;
+  --color-surface-dim: #cfdce3;
+  --color-on-tertiary-container: #006127;
+  --color-tertiary-container: #82ff99;
+  --color-inverse-primary: #618bff;
+  --color-on-error: #fff7f6;
+  --color-error-dim: #4e0309;
+  --color-primary-container: #dbe1ff;
+  --color-surface-bright: #f7f9fb;
+  --color-inverse-on-surface: #9a9d9f;
+  --color-secondary-fixed: #d3e4fe;
+  --color-on-secondary-fixed-variant: #4d5d73;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-highest: #d9e4ea;
+  --color-error: #9f403d;
+  --color-secondary-fixed-dim: #c5d6f0;
+  --color-tertiary-fixed: #82ff99;
+  --color-primary: #0053db;
+  --color-secondary: #506076;
+  --color-surface-variant: #d9e4ea;
+  --color-on-tertiary-fixed: #004c1d;
+  --color-tertiary-fixed-dim: #73f08c;
+  --color-on-primary: #f8f7ff;
+  --color-on-secondary: #f7f9ff;
+  --font-headline: 'Inter', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-label: 'Inter', sans-serif;
+}
+
+body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; min-height: max(884px, 100dvh); }
+.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+.glass-card { backdrop-filter: blur(12px); background-color: rgba(255, 255, 255, 0.8); }
+.primary-gradient { background: linear-gradient(135deg, #0053db 0%, #0048c1 100%); }
