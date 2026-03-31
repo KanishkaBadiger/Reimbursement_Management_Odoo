@@ -12,8 +12,8 @@ export default function ManagerView({ activeUser, users, refreshNotifications })
   const [reportReason, setReportReason] = useState('');
 
   const load = () => {
-    fetchManagerExpenses(activeUser.id).then(setPending);
-    fetchManagerHistory(activeUser.id).then(setHistory);
+    fetchManagerExpenses().then(setPending);
+    fetchManagerHistory().then(setHistory);
   };
 
   useEffect(() => { load(); }, [activeUser.id]);

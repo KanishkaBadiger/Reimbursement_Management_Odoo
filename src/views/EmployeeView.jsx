@@ -17,7 +17,7 @@ export default function EmployeeView({ activeUser }) {
   const [successMsg, setSuccessMsg] = useState('');
 
   const loadExpenses = () => {
-    fetchExpenses(activeUser.id).then(setExpenses);
+    fetchExpenses().then(setExpenses);
   };
 
   useEffect(() => { loadExpenses(); }, [activeUser.id]);
@@ -51,10 +51,8 @@ export default function EmployeeView({ activeUser }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (ocrLoading) return;
-    const displayAmount = Number(amount) * (RATES_TO_INR[currency] || 1);
     await createExpense({
-      user_id: activeUser.id,
-      category, amount: Number(amount), currency, display_amount: displayAmount,
+      category, amount: Number(amount), currency,
       date, description, receipt: null, comments: null,
     });
     setAmount(''); setDescription(''); setDate(''); setCategory('Travel'); setCurrency('INR');

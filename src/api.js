@@ -1,105 +1,118 @@
+import { supabase } from './supabaseClient';
+
 const API = 'http://localhost:8000/api';
 
-export async function fetchUsers() {
-  const res = await fetch(`${API}/users`);
+async function authFetch(endpoint, options = {}) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    ...options.headers,
+  };
+
+  const res = await fetch(`${API}${endpoint}`, { ...options, headers });
+  
+  // Only throw an error, do not aggressively sign out so Supabase can naturally attempt to refresh tokens without wiping the session.
+  if (res.status >= 400 && res.status < 600) {
+    const errorData = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      console.warn("Received 401 from backend, but preventing aggressive logout to avoid rate-limit loops.");
+    }
+    throw new Error(errorData.detail || `Request failed with status ${res.status}`);
+  }
+  
   return res.json();
 }
 
-export async function fetchExpenses(userId) {
-  const url = userId ? `${API}/expenses?user_id=${userId}` : `${API}/expenses`;
-  const res = await fetch(url);
-  return res.json();
+export async function fetchMe() {
+  return authFetch('/users/me');
+}
+
+export async function initCompany(data) {
+  return authFetch('/auth/init', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function fetchUsers() {
+  return authFetch('/users');
+}
+
+export async function createUser(data) {
+  return authFetch('/users', { method: 'POST', body: JSON.stringify(data) });
+}
+
+export async function fetchExpenses() {
+  return authFetch('/expenses');
 }
 
 export async function fetchAllExpenses() {
-  const res = await fetch(`${API}/expenses/all`);
-  return res.json();
+  return authFetch('/expenses/all');
 }
 
 export async function createExpense(data) {
-  const res = await fetch(`${API}/expenses`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  return res.json();
+  return authFetch('/expenses', { method: 'POST', body: JSON.stringify(data) });
 }
 
-export async function fetchManagerExpenses(managerId) {
-  const res = await fetch(`${API}/manager/expenses?manager_id=${managerId}`);
-  return res.json();
+export async function fetchManagerExpenses() {
+  return authFetch('/manager/expenses');
 }
 
-export async function fetchManagerHistory(managerId) {
-  const res = await fetch(`${API}/manager/history?manager_id=${managerId}`);
-  return res.json();
+export async function fetchManagerHistory() {
+  return authFetch('/manager/history');
 }
 
 export async function processExpenseAction(expenseId, action, comments) {
-  const res = await fetch(`${API}/expenses/${expenseId}/action`, {
+  return authFetch(`/expenses/${expenseId}/action`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, comments }),
   });
-  return res.json();
 }
 
 export async function reportEmployee(employeeId, reason) {
-  const res = await fetch(`${API}/manager/report`, {
+  return authFetch('/manager/report', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ employee_id: employeeId, reason }),
   });
-  return res.json();
 }
 
 export async function overrideExpense(expenseId, newStatus, adminComment) {
-  const res = await fetch(`${API}/expenses/${expenseId}/override`, {
+  return authFetch(`/expenses/${expenseId}/override`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ new_status: newStatus, admin_comment: adminComment }),
   });
-  return res.json();
 }
 
 export async function updateHierarchy(userId, role, managerId) {
-  const res = await fetch(`${API}/users/${userId}/hierarchy`, {
+  return authFetch(`/users/${userId}/hierarchy`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ role, manager_id: managerId }),
   });
-  return res.json();
 }
 
-export async function fetchNotifications(userId) {
-  const res = await fetch(`${API}/notifications?user_id=${userId}`);
-  return res.json();
+export async function fetchNotifications() {
+  return authFetch('/notifications');
 }
 
 export async function markNotificationRead(notifId) {
-  const res = await fetch(`${API}/notifications/${notifId}/read`, { method: 'PATCH' });
-  return res.json();
+  return authFetch(`/notifications/${notifId}/read`, { method: 'PATCH' });
 }
 
 export async function fetchRules() {
-  const res = await fetch(`${API}/rules`);
-  return res.json();
+  return authFetch('/rules');
 }
 
 export async function createRule(data) {
-  const res = await fetch(`${API}/rules`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  return res.json();
+  return authFetch('/rules', { method: 'POST', body: JSON.stringify(data) });
 }
 
 export async function toggleRule(ruleId, active) {
-  const res = await fetch(`${API}/rules/${ruleId}`, {
+  return authFetch(`/rules/${ruleId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ active }),
   });
-  return res.json();
 }

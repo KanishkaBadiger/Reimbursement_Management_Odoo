@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { COLORS, FONTS } from '../styles/theme';
 import StatCard from '../components/StatCard';
 import Badge from '../components/Badge';
-import { fetchAllExpenses, fetchRules, createRule, toggleRule, overrideExpense, updateHierarchy, fetchUsers } from '../api';
+import { fetchAllExpenses, fetchRules, createRule, toggleRule, overrideExpense, updateHierarchy, fetchUsers, createUser } from '../api';
 
 export default function AdminView({ activeUser, users, setUsers, refreshNotifications }) {
   const [expenses, setExpenses] = useState([]);
@@ -11,9 +11,55 @@ export default function AdminView({ activeUser, users, setUsers, refreshNotifica
   const [newRuleType, setNewRuleType] = useState('percentage');
   const [newRuleThreshold, setNewRuleThreshold] = useState('');
   const [newRuleCategory, setNewRuleCategory] = useState('');
+  
+  const [newEmpEmail, setNewEmpEmail] = useState('');
+  const [newEmpName, setNewEmpName] = useState('');
+  const [newEmpDept, setNewEmpDept] = useState('');
+  const [newEmpRole, setNewEmpRole] = useState('Employee');
+  const [inviting, setInviting] = useState(false);
+  const [inviteResult, setInviteResult] = useState(null);
+
   const [editingUser, setEditingUser] = useState(null);
   const [editRole, setEditRole] = useState('');
   const [editManagerId, setEditManagerId] = useState('');
+
+  function generateReadablePassword() {
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    let pwd = '';
+    for (let i = 0; i < 10; i++) pwd += chars[Math.floor(Math.random() * chars.length)];
+    return pwd + '!';
+  }
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const handleInviteEmployee = async (e) => {
+    e.preventDefault();
+    setInviting(true);
+    setInviteResult(null);
+    const emailUsed = newEmpEmail.trim();
+    try {
+      const pwd = generateReadablePassword();
+      const res = await createUser({
+        email: emailUsed,
+        password: pwd,
+        name: newEmpName,
+        department: newEmpDept,
+        role: newEmpRole
+      });
+      setInviteResult({ ...res, temp_password: pwd, used_email: emailUsed });
+      const refreshed = await fetchUsers();
+      setUsers(refreshed);
+      setNewEmpEmail('');
+      setNewEmpName('');
+      setNewEmpDept('');
+    } catch (err) {
+      alert("Failed to create user: " + err.message);
+    } finally {
+      setInviting(false);
+    }
+  };
 
   const load = () => {
     fetchAllExpenses().then(setExpenses);
@@ -144,6 +190,48 @@ export default function AdminView({ activeUser, users, setUsers, refreshNotifica
           </div>
         </div>
 
+        {/* Employee Onboarding */}
+        <div style={{ flex: 1, minWidth: '340px', background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, borderRadius: '12px', padding: '30px' }}>
+          <h3 style={{ fontFamily: FONTS.heading, color: COLORS.textPrimary, marginTop: 0, marginBottom: '20px' }}>Invite Employee</h3>
+          <form onSubmit={handleInviteEmployee} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            <div>
+              <input type="text" required placeholder="Full Name" value={newEmpName} onChange={e => setNewEmpName(e.target.value)} style={{ width: '100%', fontFamily: FONTS.body, padding: '10px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: 'transparent', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <input type="email" required placeholder="Email Address" value={newEmpEmail} onChange={e => setNewEmpEmail(e.target.value)} style={{ width: '100%', fontFamily: FONTS.body, padding: '10px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: 'transparent', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <input type="text" required placeholder="Department" value={newEmpDept} onChange={e => setNewEmpDept(e.target.value)} style={{ flex: 1, fontFamily: FONTS.body, padding: '10px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: 'transparent', outline: 'none' }} />
+              <select value={newEmpRole} onChange={e => setNewEmpRole(e.target.value)} style={{ flex: 1, fontFamily: FONTS.body, padding: '10px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: 'transparent', outline: 'none' }}>
+                <option value="Employee">Employee</option><option value="Manager">Manager</option><option value="Admin">Admin</option>
+              </select>
+            </div>
+            <button disabled={inviting} type="submit" style={{ background: COLORS.accent, border: 'none', color: COLORS.textPrimary, padding: '10px 20px', borderRadius: '8px', fontFamily: FONTS.body, fontWeight: 600, cursor: inviting ? 'not-allowed' : 'pointer', opacity: inviting ? 0.7 : 1 }}>
+              {inviting ? 'Inviting...' : 'Send Invite'}
+            </button>
+            {inviteResult && (
+              <div style={{ marginTop: '10px', padding: '16px', background: `${COLORS.accentAlt}20`, borderRadius: '8px', border: `1px solid ${COLORS.accentAlt}50` }}>
+                <p style={{ margin: 0, fontFamily: FONTS.body, fontSize: '14px', color: COLORS.textPrimary, fontWeight: 700 }}>✓ User created successfully!</p>
+                <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontFamily: FONTS.body, fontSize: '13px', color: COLORS.border, minWidth: '70px' }}>Email:</span>
+                    <code style={{ background: COLORS.cardBg, padding: '4px 8px', borderRadius: '4px', fontSize: '13px', flex: 1 }}>{inviteResult.used_email}</code>
+                    <button onClick={() => copyToClipboard(inviteResult.used_email)} style={{ background: COLORS.accent, border: 'none', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', fontFamily: FONTS.body, fontSize: '11px', fontWeight: 600 }}>Copy</button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontFamily: FONTS.body, fontSize: '13px', color: COLORS.border, minWidth: '70px' }}>Password:</span>
+                    <code style={{ background: COLORS.cardBg, padding: '4px 8px', borderRadius: '4px', fontSize: '13px', flex: 1, letterSpacing: '1px' }}>{inviteResult.temp_password}</code>
+                    <button onClick={() => copyToClipboard(inviteResult.temp_password)} style={{ background: COLORS.accent, border: 'none', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', fontFamily: FONTS.body, fontSize: '11px', fontWeight: 600 }}>Copy</button>
+                  </div>
+                </div>
+                <p style={{ margin: '8px 0 0', fontFamily: FONTS.body, fontSize: '11px', color: COLORS.border }}>Share these credentials securely with the employee.</p>
+              </div>
+            )}
+          </form>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '40px', marginBottom: '40px', flexWrap: 'wrap' }}>
         {/* Users & Roles */}
         <div style={{ flex: 1, minWidth: '340px', background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, borderRadius: '12px', padding: '30px', overflowX: 'auto' }}>
           <h3 style={{ fontFamily: FONTS.heading, color: COLORS.textPrimary, marginTop: 0, marginBottom: '20px' }}>Users & Hierarchy</h3>

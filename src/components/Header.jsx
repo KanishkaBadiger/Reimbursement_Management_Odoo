@@ -1,67 +1,51 @@
 import React, { useState } from 'react';
 import { COLORS, FONTS } from '../styles/theme';
+import { supabase } from '../supabaseClient';
 
-export default function Header({ activeRole, setActiveRole, activeUser, setActiveUser, users, notifications, onMarkRead }) {
-  const roles = ['Employee', 'Manager', 'Admin'];
+export default function Header({ activeTab, setActiveTab, activeUser, notifications, onMarkRead }) {
   const [showNotifs, setShowNotifs] = useState(false);
-  const [showUserMenu, setShowUserMenu] = useState(false);
-
-  const usersForRole = users.filter(u => u.role === activeRole);
   const unreadCount = notifications.filter(n => !n.read).length;
+
+  const tabs = ['Expenses'];
+  if (activeUser?.role === 'Manager' || activeUser?.role === 'Admin') tabs.push('Approvals');
+  if (activeUser?.role === 'Admin') tabs.push('Admin');
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    window.location.reload();
+  }
 
   return (
     <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 40px', borderBottom: `1px solid ${COLORS.border}`, position: 'relative' }}>
       <h1 style={{ fontFamily: FONTS.heading, margin: 0, color: COLORS.textPrimary, fontSize: '22px' }}>ReimburseOS</h1>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-        {/* Role Tabs */}
-        <div style={{ display: 'flex', gap: '6px' }}>
-          {roles.map(role => {
-            const isActive = activeRole === role;
+        {/* Navigation Tabs */}
+        <div style={{ display: 'flex', gap: '6px', marginRight: '20px' }}>
+          {tabs.map(tab => {
+            const isActive = activeTab === tab;
             return (
-              <button key={role} onClick={() => setActiveRole(role)} style={{
+              <button key={tab} onClick={() => setActiveTab(tab)} style={{
                 background: isActive ? COLORS.accent : 'transparent',
                 color: isActive ? COLORS.textPrimary : COLORS.border,
                 border: 'none', padding: '8px 16px', borderRadius: '8px',
                 fontFamily: FONTS.body, fontWeight: isActive ? 500 : 400, cursor: 'pointer',
               }}>
-                {role}
+                {tab}
               </button>
             );
           })}
         </div>
 
-        {/* User Picker */}
-        <div style={{ position: 'relative' }}>
-          <button onClick={() => { setShowUserMenu(!showUserMenu); setShowNotifs(false); }} style={{
-            background: 'transparent', border: `1px solid ${COLORS.border}`, borderRadius: '8px',
-            padding: '6px 14px', fontFamily: FONTS.body, fontSize: '13px', cursor: 'pointer', color: COLORS.textPrimary,
-          }}>
-            👤 {activeUser?.name || 'Select'}
-          </button>
-          {showUserMenu && (
-            <div style={{
-              position: 'absolute', top: '100%', right: 0, marginTop: '6px',
-              background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, borderRadius: '10px',
-              minWidth: '200px', zIndex: 100, overflow: 'hidden',
-            }}>
-              {usersForRole.map(u => (
-                <button key={u.id} onClick={() => { setActiveUser(u); setShowUserMenu(false); }} style={{
-                  display: 'block', width: '100%', textAlign: 'left', padding: '10px 16px',
-                  background: u.id === activeUser?.id ? COLORS.accent : 'transparent',
-                  border: 'none', borderBottom: `1px solid ${COLORS.border}40`,
-                  fontFamily: FONTS.body, fontSize: '13px', cursor: 'pointer', color: COLORS.textPrimary,
-                }}>
-                  {u.name} <span style={{ fontSize: '11px', color: COLORS.border }}>({u.department})</span>
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Current User */}
+        <div style={{ fontFamily: FONTS.body, fontSize: '13px', color: COLORS.textPrimary, borderRight: `1px solid ${COLORS.border}`, paddingRight: '16px' }}>
+          <span style={{ fontWeight: 600 }}>{activeUser?.name}</span>
+          <span style={{ color: COLORS.border, marginLeft: '6px' }}>({activeUser?.role})</span>
         </div>
 
         {/* Notification Bell */}
         <div style={{ position: 'relative' }}>
-          <button onClick={() => { setShowNotifs(!showNotifs); setShowUserMenu(false); }} style={{
+          <button onClick={() => setShowNotifs(!showNotifs)} style={{
             background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', position: 'relative',
           }}>
             🔔
@@ -74,11 +58,13 @@ export default function Header({ activeRole, setActiveRole, activeUser, setActiv
               }}>{unreadCount}</span>
             )}
           </button>
+          
           {showNotifs && (
             <div style={{
               position: 'absolute', top: '100%', right: 0, marginTop: '6px',
               background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, borderRadius: '10px',
               width: '320px', maxHeight: '360px', overflowY: 'auto', zIndex: 100,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
             }}>
               <div style={{ padding: '12px 16px', borderBottom: `1px solid ${COLORS.border}`, fontFamily: FONTS.heading, fontWeight: 700, fontSize: '14px' }}>
                 Notifications
@@ -98,6 +84,14 @@ export default function Header({ activeRole, setActiveRole, activeUser, setActiv
             </div>
           )}
         </div>
+        
+        {/* Logout */}
+        <button onClick={handleLogout} style={{
+          background: 'transparent', border: `1px solid ${COLORS.border}`, borderRadius: '8px',
+          padding: '6px 14px', fontFamily: FONTS.body, fontSize: '13px', cursor: 'pointer', color: COLORS.textPrimary,
+        }}>
+          Logout
+        </button>
       </div>
     </header>
   );

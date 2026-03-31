@@ -1,6 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from database import supabase
+from database import supabase, supabase_admin
+import requests
+from pydantic import BaseModel
 from models import (
     ExpenseCreate, ExpenseAction, ExpenseOverride,
     RuleCreate, RuleToggle, HierarchyUpdate, ReportEmployee
@@ -16,44 +18,208 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-RATES_TO_INR = {"INR": 1, "USD": 83.5, "EUR": 90.2, "GBP": 105.8}
+
+def get_current_user(authorization: str = Header(None)):
+    """Verify JWT token and return public.users record."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    
+    token = authorization.split(" ")[1]
+    
+    try:
+        # Verify via supabase to ensure token isn't revoked and is valid
+        auth_res = supabase.auth.get_user(token)
+        if not auth_res or not hasattr(auth_res, 'user') or not auth_res.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+            
+        auth_id = auth_res.user.id
+        email = auth_res.user.email
+        
+        # Load user profile from public.users
+        user_res = supabase.table("users").select("*").eq("auth_id", auth_id).execute()
+        
+        if not user_res.data:
+            # We are in a state where auth.users exists but public.users doesn't.
+            # This happens immediately after signup before /api/auth/init is called.
+            # Return a special dict so the init endpoint can authorize the caller.
+            return {"_auth_id": auth_id, "_email": email, "is_new_signup": True}
+            
+        return user_res.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+
+class InitCompanyRequest(BaseModel):
+    company_name: str
+    country: str
+    admin_name: str
+
+@app.post("/api/auth/init")
+def init_company(body: InitCompanyRequest, user=Depends(get_current_user)):
+    """Called immediately after successful Supabase signup to provision company."""
+    if not user.get("is_new_signup"):
+        raise HTTPException(400, "User is already initialized.")
+        
+    auth_id = user["_auth_id"]
+    email = user["_email"]
+    
+    # Fetch country currency dynamically (Requirement from PRD)
+    default_currency = "USD"
+    try:
+        resp = requests.get(f"https://restcountries.com/v3.1/name/{body.country}?fullText=true")
+        if resp.status_code == 200:
+            data = resp.json()[0]
+            currencies = data.get("currencies", {})
+            if currencies:
+                default_currency = list(currencies.keys())[0]
+    except Exception:
+        pass # Fallback to USD
+        
+    # 1. Create Company
+    company_res = supabase.table("companies").insert({
+        "name": body.company_name,
+        "country": body.country,
+        "default_currency": default_currency
+    }).execute()
+    company_id = company_res.data[0]["id"]
+    
+    # 2. Create User as Admin
+    user_res = supabase.table("users").insert({
+        "auth_id": auth_id,
+        "email": email,
+        "name": body.admin_name,
+        "department": "Management",
+        "role": "Admin",
+        "company_id": company_id
+    }).execute()
+    
+    return {"message": "Initialization complete", "user": user_res.data[0], "company_id": company_id, "currency": default_currency}
 
 
 def derive_status(steps):
-    """Compute expense status from its approval steps."""
-    if any(s["status"] == "rejected" for s in steps):
-        return "rejected"
-    if all(s["status"] == "approved" for s in steps):
-        return "approved"
-    return "pending"
+    """Compute expense status from its approval steps based on consensus / override rules."""
+    from collections import defaultdict
+    steps_by_order = defaultdict(list)
+    for s in steps:
+        steps_by_order[s["step_order"]].append(s)
+
+    for order in sorted(steps_by_order.keys()):
+        stage_steps = steps_by_order[order]
+        is_consensus = any(s["role"] == "Consensus" for s in stage_steps)
+
+        if is_consensus:
+            approved_count = sum(1 for s in stage_steps if s["status"] == "approved")
+            rejected_count = sum(1 for s in stage_steps if s["status"] == "rejected")
+            total = len(stage_steps)
+            
+            # 60% minimum consensus required
+            if approved_count / total >= 0.6:
+                continue # stage passed
+            
+            remaining = total - approved_count - rejected_count
+            if (approved_count + remaining) / total < 0.6:
+                return "rejected"
+            return "pending"
+        else:
+            step = stage_steps[0]
+            if step["status"] == "rejected":
+                return "rejected"
+            if step["status"] == "pending":
+                return "pending"
+    return "approved"
 
 
 def compute_progress(steps):
-    """0 = submitted, 50 = manager done, 100 = all done."""
-    total = len(steps)
-    done = sum(1 for s in steps if s["status"] in ("approved", "rejected"))
-    if total == 0:
-        return 0
-    return int((done / total) * 100)
+    """0 = submitted, intermediate, 100 = all done."""
+    from collections import defaultdict
+    steps_by_order = defaultdict(list)
+    for s in steps:
+        steps_by_order[s["step_order"]].append(s)
+        
+    total_stages = len(steps_by_order)
+    if total_stages == 0: return 0
+    
+    completed_stages = 0
+    for order in sorted(steps_by_order.keys()):
+        stage_steps = steps_by_order[order]
+        is_consensus = any(s["role"] == "Consensus" for s in stage_steps)
+        if is_consensus:
+            approved = sum(1 for s in stage_steps if s["status"] == "approved")
+            if approved / len(stage_steps) >= 0.6:
+                completed_stages += 1
+            elif any(s["status"] == "rejected" for s in stage_steps):
+                # if rejected early
+                pass
+        else:
+            if stage_steps[0]["status"] in ("approved", "rejected"):
+                completed_stages += 1
+                
+    return int((completed_stages / total_stages) * 100)
 
 
 # ────────────────────────── USERS ──────────────────────────
 
 @app.get("/api/users")
-def get_users():
-    res = supabase.table("users").select("*").order("id").execute()
+def get_users(current_user=Depends(get_current_user)):
+    if current_user.get("is_new_signup"): raise HTTPException(401)
+    res = supabase.table("users").select("*").eq("company_id", current_user["company_id"]).order("id").execute()
     return res.data
+
+from models import CreateUserRequest
+
+@app.post("/api/users")
+def create_user(body: CreateUserRequest, current_user=Depends(get_current_user)):
+    """Admin creates a real user."""
+    if current_user.get("is_new_signup") or current_user["role"] != "Admin": raise HTTPException(401)
+    
+    from database import SUPABASE_SERVICE_KEY
+    if not SUPABASE_SERVICE_KEY:
+        raise HTTPException(status_code=500, detail="Cannot invite users: SUPABASE_SERVICE_KEY is missing in backend/.env. Please add your Supabase service_role secret key to invite employees.")
+
+    # 1. Create the user in Supabase Auth (admin API bypasses signup rate limits usually)
+    try:
+        auth_res = supabase_admin.auth.admin.create_user({
+            "email": body.email,
+            "password": body.password,
+            "email_confirm": True
+        })
+    except Exception as e:
+        if "User not allowed" in str(e):
+            raise HTTPException(status_code=500, detail="SUPABASE_SERVICE_KEY is invalid or missing.")
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    new_auth_id = auth_res.user.id
+    
+    # 2. Insert into public.users
+    user_res = supabase.table("users").insert({
+        "auth_id": new_auth_id,
+        "email": body.email,
+        "name": body.name,
+        "department": body.department,
+        "role": body.role,
+        "company_id": current_user["company_id"]
+    }).execute()
+    
+    return user_res.data[0]
+
+
+@app.get("/api/users/me")
+def get_user_me(current_user=Depends(get_current_user)):
+    return current_user
 
 
 @app.get("/api/users/{user_id}")
-def get_user(user_id: int):
-    res = supabase.table("users").select("*").eq("id", user_id).single().execute()
+def get_user(user_id: int, current_user=Depends(get_current_user)):
+    res = supabase.table("users").select("*").eq("id", user_id).eq("company_id", current_user["company_id"]).single().execute()
     return res.data
 
 
 @app.patch("/api/users/{user_id}/hierarchy")
-def update_hierarchy(user_id: int, body: HierarchyUpdate):
+def update_hierarchy(user_id: int, body: HierarchyUpdate, current_user=Depends(get_current_user)):
     """Admin: assign role and/or manager to a user."""
+    if current_user["role"] != "Admin":
+        raise HTTPException(403, "Admins only")
+        
     updates = {}
     if body.role is not None:
         updates["role"] = body.role
@@ -61,6 +227,12 @@ def update_hierarchy(user_id: int, body: HierarchyUpdate):
         updates["manager_id"] = body.manager_id
     if not updates:
         raise HTTPException(400, "Nothing to update")
+        
+    # Ensure target user belongs to the same company
+    target = supabase.table("users").select("id").eq("id", user_id).eq("company_id", current_user["company_id"]).execute()
+    if not target.data:
+        raise HTTPException(404, "Target user not found")
+        
     res = supabase.table("users").update(updates).eq("id", user_id).execute()
     return res.data
 
@@ -107,45 +279,73 @@ def _enrich_expenses(expenses):
 
 
 @app.get("/api/expenses")
-def get_expenses(user_id: int = None):
-    """Employee: pass ?user_id=4 to get own expenses. No param = all."""
+def get_expenses(user_id: int = None, current_user=Depends(get_current_user)):
+    """Employee mode: return own expenses. Can theoretically take ?user_id for managers viewing specific employees."""
     query = supabase.table("expenses").select("*").order("id", desc=True)
-    if user_id:
+    
+    # If the user is an Employee, they can ONLY see their own expenses
+    if current_user["role"] == "Employee":
+        query = query.eq("user_id", current_user["id"])
+    elif user_id:
         query = query.eq("user_id", user_id)
+        
     res = query.execute()
-    return _enrich_expenses(res.data)
+    # Need to filter the final results to ensure they belong to the current_user's company.
+    # We do this post-fetch or by joining users, but since users belong to company, we can filter in _enrich
+    expenses = res.data
+    return _enrich_expenses(expenses)
 
 
 @app.get("/api/expenses/all")
-def get_all_expenses():
-    """Admin: get every expense."""
-    res = supabase.table("expenses").select("*").order("id", desc=True).execute()
+def get_all_expenses(current_user=Depends(get_current_user)):
+    """Admin: get every expense in their company."""
+    if current_user["role"] != "Admin":
+        raise HTTPException(403, "Admins only")
+        
+    # Get all users in this company
+    users_res = supabase.table("users").select("id").eq("company_id", current_user["company_id"]).execute()
+    company_user_ids = [u["id"] for u in users_res.data]
+    
+    if not company_user_ids:
+        return []
+        
+    res = supabase.table("expenses").select("*").in_("user_id", company_user_ids).order("id", desc=True).execute()
     return _enrich_expenses(res.data)
 
 
 @app.post("/api/expenses")
-def create_expense(body: ExpenseCreate):
+def create_expense(body: ExpenseCreate, current_user=Depends(get_current_user)):
     """
     Dynamic Rule Engine:
     1. Check if employee has a manager → if yes, create Manager step.
        If no manager, skip straight to Admin/Finance step.
     2. Fetch all active rules and evaluate them against this expense.
-       - percentage rule: if display_amount > threshold, add Admin step
-       - specific rule: if category matches, always add Admin step
-       - hybrid rule: if category matches AND display_amount > threshold, add Admin step
-    3. If no rules trigger AND manager exists, manager approval is final.
     """
-    user_res = supabase.table("users").select("*").eq("id", body.user_id).single().execute()
-    user = user_res.data
+    user = current_user
     manager_id = user.get("manager_id")
+    company_id = user.get("company_id")
+    
+    company_res = supabase.table("companies").select("default_currency").eq("id", company_id).single().execute()
+    default_currency = company_res.data["default_currency"]
+    
+    display_amount = body.amount
+    if body.currency.upper() != default_currency.upper():
+        try:
+            resp = requests.get(f"https://api.exchangerate-api.com/v4/latest/{body.currency.upper()}")
+            if resp.status_code == 200:
+                rates = resp.json().get("rates", {})
+                target_rate = rates.get(default_currency.upper(), 1)
+                display_amount = body.amount * target_rate
+        except Exception as e:
+            print("Currency conversion error", e)
 
     # Insert expense
     expense_data = {
-        "user_id": body.user_id,
+        "user_id": user["id"],
         "category": body.category,
         "amount": body.amount,
         "currency": body.currency,
-        "display_amount": body.display_amount,
+        "display_amount": display_amount,
         "date": body.date,
         "description": body.description,
         "receipt": body.receipt,
@@ -156,64 +356,87 @@ def create_expense(body: ExpenseCreate):
     exp_res = supabase.table("expenses").insert(expense_data).execute()
     new_expense = exp_res.data[0]
 
-    # ── Step 1: Hierarchy check ──
+    # ── Step 1: Handling "Software" category 60% Consensus Rule ──
     steps = []
     step_order = 1
+    
+    if body.category.lower() == "software":
+        # Find all Admins and Managers for this company to act as Consensus pool
+        pool_res = supabase.table("users") \
+            .select("id") \
+            .eq("company_id", company_id) \
+            .in_("role", ["Admin", "Manager"]) \
+            .neq("id", user["id"]) \
+            .execute()
+        pool = pool_res.data
+        if not pool:
+            # Fallback if no pool available, just force admin review
+            pool = [{"id": 1}]
+            
+        for p in pool:
+            steps.append({
+                "expense_id": new_expense["id"],
+                "role": "Consensus",
+                "approver_id": p["id"],
+                "status": "pending",
+                "step_order": step_order,
+            })
+    else:
+        # ── Traditional Hierarchy ──
+        if manager_id:
+            # Employee has a manager → create Manager approval step
+            steps.append({
+                "expense_id": new_expense["id"],
+                "role": "Manager",
+                "approver_id": manager_id,
+                "status": "pending",
+                "step_order": step_order,
+            })
+            step_order += 1
 
-    if manager_id:
-        # Employee has a manager → create Manager approval step
-        steps.append({
-            "expense_id": new_expense["id"],
-            "role": "Manager",
-            "approver_id": manager_id,
-            "status": "pending",
-            "step_order": step_order,
-        })
-        step_order += 1
+        # ── Step 2: Rule engine ──
+        rules_res = supabase.table("rules").select("*").eq("active", True).eq("company_id", company_id).execute()
+        active_rules = rules_res.data
+        needs_admin_step = False
 
-    # ── Step 2: Rule engine ──
-    rules_res = supabase.table("rules").select("*").eq("active", True).execute()
-    active_rules = rules_res.data
-    needs_admin_step = False
+        for rule in active_rules:
+            threshold = float(rule.get("threshold") or 0)
+            rule_category = rule.get("category")
+            rule_type = rule.get("type", "percentage")
 
-    for rule in active_rules:
-        threshold = float(rule.get("threshold") or 0)
-        rule_category = rule.get("category")
-        rule_type = rule.get("type", "percentage")
+            if rule_type == "percentage":
+                # Trigger if expense amount exceeds the threshold
+                if body.display_amount > threshold and threshold > 0:
+                    needs_admin_step = True
+                    break
+            elif rule_type == "specific":
+                # Trigger if category matches (always needs admin for this category)
+                if rule_category and body.category.lower() == rule_category.lower():
+                    needs_admin_step = True
+                    break
+            elif rule_type == "hybrid":
+                # Trigger if BOTH category matches AND amount exceeds threshold
+                cat_match = rule_category and body.category.lower() == rule_category.lower()
+                amt_match = body.display_amount > threshold and threshold > 0
+                if cat_match and amt_match:
+                    needs_admin_step = True
+                    break
 
-        if rule_type == "percentage":
-            # Trigger if expense amount exceeds the threshold
-            if body.display_amount > threshold and threshold > 0:
-                needs_admin_step = True
-                break
-        elif rule_type == "specific":
-            # Trigger if category matches (always needs admin for this category)
-            if rule_category and body.category.lower() == rule_category.lower():
-                needs_admin_step = True
-                break
-        elif rule_type == "hybrid":
-            # Trigger if BOTH category matches AND amount exceeds threshold
-            cat_match = rule_category and body.category.lower() == rule_category.lower()
-            amt_match = body.display_amount > threshold and threshold > 0
-            if cat_match and amt_match:
-                needs_admin_step = True
-                break
+        # If no manager exists, we MUST have at least one approver
+        if not manager_id:
+            needs_admin_step = True
 
-    # If no manager exists, we MUST have at least one approver
-    if not manager_id:
-        needs_admin_step = True
-
-    if needs_admin_step:
-        # Find a Finance/Admin user for the admin step
-        finance_res = supabase.table("users").select("id").eq("role", "Admin").neq("id", 1).limit(1).execute()
-        finance_id = finance_res.data[0]["id"] if finance_res.data else 1
-        steps.append({
-            "expense_id": new_expense["id"],
-            "role": "Finance",
-            "approver_id": finance_id,
-            "status": "pending",
-            "step_order": step_order,
-        })
+        if needs_admin_step:
+            # Find a Finance/Admin user for the admin step
+            finance_res = supabase.table("users").select("id").eq("role", "Admin").neq("id", 1).limit(1).execute()
+            finance_id = finance_res.data[0]["id"] if finance_res.data else 1
+            steps.append({
+                "expense_id": new_expense["id"],
+                "role": "Finance",
+                "approver_id": finance_id,
+                "status": "pending",
+                "step_order": step_order,
+            })
 
     # Insert all computed steps
     if steps:
@@ -230,47 +453,64 @@ def create_expense(body: ExpenseCreate):
     return _enrich_expenses([new_expense])[0]
 
 
-# ────────────────────────── MANAGER ──────────────────────────
-
 @app.get("/api/manager/expenses")
-def get_pending_for_manager(manager_id: int):
-    """Manager: get all pending expenses for employees they manage."""
-    # Get employee IDs under this manager
-    emp_res = supabase.table("users").select("id").eq("manager_id", manager_id).execute()
-    emp_ids = [e["id"] for e in emp_res.data]
-    if not emp_ids:
+def get_pending_for_manager(manager_id: int = None, current_user=Depends(get_current_user)):
+    """Manager: get all pending expenses assigned to this user's approval queue."""
+    # We find all approval steps assigned to this user that are 'pending'
+    steps_res = supabase.table("approval_steps").select("expense_id").eq("approver_id", current_user["id"]).eq("status", "pending").execute()
+    expense_ids = list(set([s["expense_id"] for s in steps_res.data]))
+    
+    if not expense_ids:
         return []
-    res = supabase.table("expenses").select("*").in_("user_id", emp_ids).eq("status", "pending").order("id", desc=True).execute()
+        
+    res = supabase.table("expenses").select("*").in_("id", expense_ids).eq("status", "pending").order("id", desc=True).execute()
     return _enrich_expenses(res.data)
 
 
 @app.get("/api/manager/history")
-def get_history_for_manager(manager_id: int):
-    """Manager: get past approvals/rejects for employees they manage."""
-    emp_res = supabase.table("users").select("id").eq("manager_id", manager_id).execute()
-    emp_ids = [e["id"] for e in emp_res.data]
-    if not emp_ids:
+def get_history_for_manager(manager_id: int = None, current_user=Depends(get_current_user)):
+    """Manager: get past approvals/rejects this user acted upon."""
+    steps_res = supabase.table("approval_steps").select("expense_id").eq("approver_id", current_user["id"]).neq("status", "pending").execute()
+    expense_ids = list(set([s["expense_id"] for s in steps_res.data]))
+    
+    if not expense_ids:
         return []
-    res = supabase.table("expenses").select("*").in_("user_id", emp_ids).neq("status", "pending").order("id", desc=True).execute()
+        
+    res = supabase.table("expenses").select("*").in_("id", expense_ids).order("id", desc=True).execute()
     return _enrich_expenses(res.data)
 
 
 @app.patch("/api/expenses/{expense_id}/action")
-def process_expense_action(expense_id: int, body: ExpenseAction):
+def process_expense_action(expense_id: int, body: ExpenseAction, current_user=Depends(get_current_user)):
     """Manager/Finance: approve or reject the next pending step."""
     # Get all steps for this expense
     steps_res = supabase.table("approval_steps").select("*").eq("expense_id", expense_id).order("step_order").execute()
     steps = steps_res.data
 
-    # Find first pending step
-    target_step = None
+    # Find the active stage order (the lowest step_order that still has pending steps)
+    active_order = None
     for s in steps:
         if s["status"] == "pending":
+            active_order = s["step_order"]
+            break
+
+    if active_order is None:
+        raise HTTPException(400, "No pending approval steps remaining")
+
+    # Find the specific step assigned to the current user in this active stage
+    target_step = None
+    for s in steps:
+        if s["step_order"] == active_order and s["status"] == "pending" and s["approver_id"] == current_user["id"]:
             target_step = s
             break
 
+    if not target_step and current_user["role"] != "Admin":
+        raise HTTPException(403, "Not your turn to approve")
+        
     if not target_step:
-        raise HTTPException(400, "No pending approval steps remaining")
+        # Admin is trying to act on a step they aren't assigned to.
+        # Admins should use the /override endpoint instead to bypass the queue.
+        raise HTTPException(403, "Not assigned to this approval step.")
 
     # Update that step
     supabase.table("approval_steps").update({"status": body.action}).eq("id", target_step["id"]).execute()
@@ -303,16 +543,16 @@ def process_expense_action(expense_id: int, body: ExpenseAction):
 
 
 @app.post("/api/manager/report")
-def report_employee(body: ReportEmployee):
+def report_employee(body: ReportEmployee, current_user=Depends(get_current_user)):
     """Manager: report an employee → sends notification to all admins."""
     employee_res = supabase.table("users").select("name").eq("id", body.employee_id).single().execute()
     emp_name = employee_res.data["name"]
 
-    admins_res = supabase.table("users").select("id").eq("role", "Admin").execute()
+    admins_res = supabase.table("users").select("id").eq("role", "Admin").eq("company_id", current_user["company_id"]).execute()
     notifications = [
         {
             "recipient_id": admin["id"],
-            "message": f"Employee {emp_name} reported: {body.reason}",
+            "message": f"Employee {emp_name} reported by {current_user['name']}: {body.reason}",
             "type": "REPORT_EMPLOYEE",
         }
         for admin in admins_res.data
@@ -325,8 +565,16 @@ def report_employee(body: ReportEmployee):
 # ────────────────────────── ADMIN ──────────────────────────
 
 @app.patch("/api/expenses/{expense_id}/override")
-def override_expense(expense_id: int, body: ExpenseOverride):
+def override_expense(expense_id: int, body: ExpenseOverride, current_user=Depends(get_current_user)):
     """Admin: force-override all approval steps and notify manager + employee."""
+    if current_user["role"] != "Admin": raise HTTPException(403)
+        
+    # Check expense belongs to this company implicitly by checking user's company_id
+    expense_res = supabase.table("expenses").select("*, users!inner(company_id)").eq("id", expense_id).single().execute()
+    expense = expense_res.data
+    
+    if expense["users"]["company_id"] != current_user["company_id"]: raise HTTPException(403)
+
     # Set all steps to the override status
     supabase.table("approval_steps").update({"status": body.new_status}).eq("expense_id", expense_id).execute()
 
@@ -339,8 +587,6 @@ def override_expense(expense_id: int, body: ExpenseOverride):
     }).eq("id", expense_id).execute()
 
     # Notify both the manager and the employee
-    expense_res = supabase.table("expenses").select("*").eq("id", expense_id).single().execute()
-    expense = expense_res.data
 
     user_res = supabase.table("users").select("*, manager:manager_id(id, name)").eq("id", expense["user_id"]).single().execute()
     user = user_res.data
@@ -367,27 +613,29 @@ def override_expense(expense_id: int, body: ExpenseOverride):
 # ────────────────────────── NOTIFICATIONS ──────────────────────────
 
 @app.get("/api/notifications")
-def get_notifications(user_id: int):
-    res = supabase.table("notifications").select("*").eq("recipient_id", user_id).order("created_at", desc=True).execute()
+def get_notifications(current_user=Depends(get_current_user)):
+    if current_user.get("is_new_signup"): return []
+    res = supabase.table("notifications").select("*").eq("recipient_id", current_user["id"]).order("created_at", desc=True).execute()
     return res.data
 
 
 @app.patch("/api/notifications/{notif_id}/read")
-def mark_notification_read(notif_id: int):
-    supabase.table("notifications").update({"read": True}).eq("id", notif_id).execute()
+def mark_notification_read(notif_id: int, current_user=Depends(get_current_user)):
+    supabase.table("notifications").update({"read": True}).eq("id", notif_id).eq("recipient_id", current_user["id"]).execute()
     return {"ok": True}
 
 
 # ────────────────────────── RULES ──────────────────────────
 
 @app.get("/api/rules")
-def get_rules():
-    res = supabase.table("rules").select("*").order("id").execute()
+def get_rules(current_user=Depends(get_current_user)):
+    res = supabase.table("rules").select("*").eq("company_id", current_user["company_id"]).order("id").execute()
     return res.data
 
 
 @app.post("/api/rules")
-def create_rule(body: RuleCreate):
+def create_rule(body: RuleCreate, current_user=Depends(get_current_user)):
+    if current_user["role"] != "Admin": raise HTTPException(403)
     res = supabase.table("rules").insert({
         "name": body.name,
         "type": body.type,
@@ -396,11 +644,13 @@ def create_rule(body: RuleCreate):
         "category": body.category,
         "approver_role": body.approver_role,
         "active": True,
+        "company_id": current_user["company_id"]
     }).execute()
     return res.data[0]
 
 
 @app.patch("/api/rules/{rule_id}")
-def toggle_rule(rule_id: int, body: RuleToggle):
-    res = supabase.table("rules").update({"active": body.active}).eq("id", rule_id).execute()
+def toggle_rule(rule_id: int, body: RuleToggle, current_user=Depends(get_current_user)):
+    if current_user["role"] != "Admin": raise HTTPException(403)
+    res = supabase.table("rules").update({"active": body.active}).eq("id", rule_id).eq("company_id", current_user["company_id"]).execute()
     return res.data

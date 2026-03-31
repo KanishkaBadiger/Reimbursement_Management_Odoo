@@ -4,11 +4,9 @@ from typing import Optional
 # ---------- Request Schemas ----------
 
 class ExpenseCreate(BaseModel):
-    user_id: int
     category: str            # Travel | Meals | Software | Office | Other
     amount: float
     currency: str            # INR | USD | EUR | GBP
-    display_amount: float    # pre-computed on frontend
     date: str                # YYYY-MM-DD
     description: str
     receipt: Optional[str] = None
@@ -40,3 +38,15 @@ class HierarchyUpdate(BaseModel):
 class ReportEmployee(BaseModel):
     employee_id: int
     reason: str
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+    department: str
+    role: str
